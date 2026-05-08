@@ -1,0 +1,8 @@
+path: datasets # dataset root dir
+train: autosplit_train.txt
+val: autosplit_val.txt
+test: autosplit_test.txt
+
+# Classes
+names:
+  0: charging_cover
