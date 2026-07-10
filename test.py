@@ -273,8 +273,9 @@ def hand_pose():
     cap.release()
 
 if __name__ == "__main__":
-    crop_detection("test_images/rgb.png", "test_images/raw_depth.png")
+    # crop_detection("test_images/rgb.png", "test_images/raw_depth.png")
     # visualize_result("test_images/test_6.jpg")
     # camera_feed()
     # result = yolo_model()
     # print(result)
+    camera_feed()
