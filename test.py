@@ -5,7 +5,7 @@ import torch
 import mediapipe as mp
 import math
 
-BOX_SCALE = 250
+BOX_SCALE = 5
 
 def yolo_model(frames):
     model = YOLO("weights/best.pt")
@@ -24,12 +24,23 @@ def crop_detection(img_path, depth_path):
     results = yolo_model(img_path)
     frame = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
     depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+    print("depth shape:", depth.shape)
+    print("depth dtype:", depth.dtype)
+    print("depth max:", depth.max())
 
     if results:
         bounding_box = results[0]
 
-        top_left = [int(bounding_box[0])-BOX_SCALE,int(bounding_box[1])-BOX_SCALE]      #START coordinates
-        btm_right = [int(bounding_box[2])+BOX_SCALE, int(bounding_box[3])+BOX_SCALE]    #END coordinates
+        h_img, w_img = frame.shape[:2]
+
+        top_left  = [
+            max(0, int(bounding_box[0]) - BOX_SCALE),
+            max(0, int(bounding_box[1]) - BOX_SCALE)
+        ]
+        btm_right = [
+            min(w_img, int(bounding_box[2]) + BOX_SCALE),
+            min(h_img, int(bounding_box[3]) + BOX_SCALE)
+        ]
 
         print("TOP LEFT: ", top_left)
         print("BTM RIGHT: ", btm_right)
@@ -37,11 +48,83 @@ def crop_detection(img_path, depth_path):
         cropped_img = frame[top_left[1]:btm_right[1], top_left[0]:btm_right[0]]       #startY:endY, startX:endX
         cropped_depth = depth[top_left[1]:btm_right[1], top_left[0]:btm_right[0]] 
 
+        intrinsics = load_intrinsics("numpy_trans/camera_intrinsics.npz")
+        center_3d = get_center_3d(cropped_depth, top_left, intrinsics)
+
+    np.save("cropped_img/pcd_center.npy", center_3d)
     cv2.imwrite("cropped_img/img.jpg", cropped_img)
     cv2.imwrite("cropped_img/depth.png", cropped_depth)
     cv2.imshow('Camera', cropped_img)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
+#Get depth camera PCD coordinates
+def get_center_3d(cropped_depth, top_left, intrinsics):
+    """
+    Get 3D coordinates of the center of a cropped depth image.
+
+    Args:
+        cropped_depth:  cropped depth image (H x W numpy array, uint16 mm)
+        top_left:       [x, y] top-left corner of crop in original image coords
+        intrinsics:     dict with fx, fy, cx, cy
+
+    Returns:
+        center_3d: numpy array [X, Y, Z] in meters (camera frame), or None
+    """
+    # force single channel
+    if cropped_depth.ndim == 3:
+        cropped_depth = cropped_depth[:, :, 0]
+
+    h, w = cropped_depth.shape
+    u_crop, v_crop = w // 2, h // 2
+
+    # offset back to original image coords
+    u_orig = u_crop + top_left[0]
+    v_orig = v_crop + top_left[1]
+
+    depth_val = cropped_depth[v_crop, u_crop]
+
+    if depth_val == 0:
+        print("Warning: center depth is 0, using patch average")
+        patch = cropped_depth[v_crop-5:v_crop+5, u_crop-5:u_crop+5]
+        valid = patch[patch > 0]
+        depth_val = valid.mean() if len(valid) > 0 else None
+
+    if depth_val is None:
+        print("Could not compute 3D center — no valid depth")
+        return None
+
+    depth_m = depth_val / 1000.0  # mm → meters
+    fx, fy = intrinsics['fx'], intrinsics['fy']
+    cx, cy = intrinsics['cx'], intrinsics['cy']
+
+    X = (u_orig - cx) * depth_m / fx
+    Y = (v_orig - cy) * depth_m / fy
+    Z = depth_m
+
+    center_3d = np.array([X, Y, Z])
+    print(f"Crop center pixel (orig): ({u_orig}, {v_orig})")
+    print(f"Depth: {depth_m:.4f} m")
+    print(f"3D center (camera frame): X={X:.4f}, Y={Y:.4f}, Z={Z:.4f} m")
+
+    return center_3d
+
+def load_intrinsics(path):
+    intrinsics = np.load(path)
+    intrinsics_matrix = intrinsics["camera_matrix"]
+    fx = intrinsics_matrix[0,0]
+    fy = intrinsics_matrix[1,1]
+    cx = intrinsics_matrix[0,2]
+    cy = intrinsics_matrix[1,2]
+
+    print(f"{fx}, {fy}, {cx}, {cy}")
+
+    return {
+        "fx": fx,
+        "fy": fy,
+        "cx": cx,
+        "cy": cy
+    }
 
 def visualize_result(img_path):
     results = yolo_model(img_path)
@@ -190,7 +273,7 @@ def hand_pose():
     cap.release()
 
 if __name__ == "__main__":
-    crop_detection("test_images/test_1.png", "test_images/depth_1.png")
+    crop_detection("test_images/rgb.png", "test_images/raw_depth.png")
     # visualize_result("test_images/test_6.jpg")
     # camera_feed()
     # result = yolo_model()

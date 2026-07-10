@@ -301,7 +301,6 @@ def read_csv():
 
     return poses
 
-
 def read_npz():
     with np.load('hand_eye_result.npz') as data:
         # See the names of the arrays inside
@@ -365,13 +364,12 @@ def transform_multiply():
     
     estimate = np.load("estimated_transform.npy")
 
+    print("ESTIMATED TRANSFORM TCP: ", matrix_to_tcp(estimate))
     end_transform = dobot @ estimate
 
     print(end_transform)
 
     return end_transform
-
-
 
 if __name__ == "__main__":
     # img = cv2.imread("imgs/color_1280x720_1_1782793011.0.png")

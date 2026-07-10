@@ -104,12 +104,12 @@ def main():
     T_Cam2Final = origin_final_transformation(t_cam, t_final)
 
     t_dobot = tcp_to_matrix(
-        x=198.033127,
-        y=-352.80838,
-        z=210.772324,
-        rx=-98.440735,
-        ry=15.355934,
-        rz=158.735733
+        x=193.747452,
+        y=-359.937531,
+        z=209.712326,
+        rx=-97.465225,
+        ry=13.356378,
+        rz=147.253998
     )
 
     # get depth camera offset to flange
