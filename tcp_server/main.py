@@ -42,7 +42,7 @@ async def main():
     pipeline = start_camera_pipeline()
 
     # start telling robot to start program/start rotate J1
-    start = "R,J1,-100"
+    start = "R,J1,-1"
     await push_status(connection_state.current_writer, start)
 
     # start read realtime camera data and port center
@@ -50,7 +50,7 @@ async def main():
         frame_size ,bb_box = camera_data_stream(pipeline)
         print(bb_box)
 
-        move = "R,J1,2"
+        move = "R,J1,-1"
         await push_status(connection_state.current_writer, move)
 
         if bb_box:
@@ -61,9 +61,18 @@ async def main():
             # check if bb X axis is equal to the frame center X axis
             if bb_box[0] >= (frame_center_width-15) and bb_box[0] <= (frame_center_width+15):
                 print("STOP J1")
-                stop = "R,J1,0"
+                stop = "S,J1,0"
                 await push_status(connection_state.current_writer, stop)
                 break
+
+            # check if bb X axis is equal to the frame center X axis
+            if bb_box[0] >= (frame_center_height-15) and bb_box[0] <= (frame_center_height+15):
+                print("STOP J1")
+                stop = "S,J1,0"
+                await push_status(connection_state.current_writer, stop)
+                break
+
+        await asyncio.sleep(0.1)
 
 async def test_tcp():
     server_task = asyncio.create_task(start_server())
