@@ -41,19 +41,33 @@ async def main():
     # start camera pipeline
     pipeline = start_camera_pipeline()
 
+    #init angle
+    j1 = -1
+    j2 = 0
     # start telling robot to start program/start rotate J1
-    start = "R,J1,-1"
-    await push_status(connection_state.current_writer, start)
+    move = f"R,J,{j1},{j2},0,0,0,0"
+    await push_status(connection_state.current_writer, move)
 
     # start read realtime camera data and port center
     while True:
+        
         frame_size ,bb_box = camera_data_stream(pipeline)
         print(bb_box)
 
-        move = "R,J1,-1"
-        await push_status(connection_state.current_writer, move)
+        # move = f"R,J,-1,0,0,0,0,0"
+        # await push_status(connection_state.current_writer, move)
 
         if bb_box:
+            yAxis = frame_center_height - bb_box[1]
+
+            # check whether the port is on top or bottom
+            if yAxis > 0:
+                # top
+                j2 = -1
+            else:
+                # bottom
+                j2 = 1
+
             print("BB_BOX: ", bb_box)
             frame_center_width = int(frame_size[0]/2)
             frame_center_height = int(frame_size[1]/2)
@@ -61,16 +75,21 @@ async def main():
             # check if bb X axis is equal to the frame center X axis
             if bb_box[0] >= (frame_center_width-15) and bb_box[0] <= (frame_center_width+15):
                 print("STOP J1")
-                stop = "S,J1,0"
-                await push_status(connection_state.current_writer, stop)
+                j1 = 0
+                # stop = "S,J1,0"
+                # await push_status(connection_state.current_writer, stop)
                 break
 
             # check if bb X axis is equal to the frame center X axis
             if bb_box[0] >= (frame_center_height-15) and bb_box[0] <= (frame_center_height+15):
-                print("STOP J1")
-                stop = "S,J1,0"
-                await push_status(connection_state.current_writer, stop)
+                print("STOP J2")
+                j2 = 0
+                # stop = "S,J1,0"
+                # await push_status(connection_state.current_writer, stop)
                 break
+
+        move = f"R,J,{j1},{j2},0,0,0,0"
+        await push_status(connection_state.current_writer, move)
 
         await asyncio.sleep(0.1)
 
