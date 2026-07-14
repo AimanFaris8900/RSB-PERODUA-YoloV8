@@ -50,6 +50,9 @@ async def main():
         frame_size ,bb_box = camera_data_stream(pipeline)
         print(bb_box)
 
+        move = "R,J1,2"
+        await push_status(connection_state.current_writer, move)
+
         if bb_box:
             print("BB_BOX: ", bb_box)
             frame_center_width = int(frame_size[0]/2)
