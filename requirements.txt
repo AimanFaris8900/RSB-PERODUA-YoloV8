@@ -2,4 +2,5 @@ opencv-python
 numpy
 pandas
 ultralytics
-pyorbbecsdk2 
+pyorbbecsdk2
+mediapipe

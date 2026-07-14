@@ -1,9 +1,8 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
-import torch
 import mediapipe as mp
-import math
+from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet
 
 BOX_SCALE = 5
 
@@ -190,6 +189,96 @@ def camera_feed():
     cam.release()
     cv2.destroyAllWindows()
 
+def draw_bounding_box(bb_results, frame, frame_size):
+    frame_width = frame_size[0]
+    frame_height = frame_size[1]
+
+    if bb_results:
+        bounding_box = bb_results[0]
+        print("BOUNDING BOX: ", bounding_box)
+        frame = cv2.rectangle(frame, (int(bounding_box[0]),int(bounding_box[1])), (int(bounding_box[2]), int(bounding_box[3])), color=(0,0,255))
+        center = calculate_center(bounding_box)
+        print("CENTER VAR: ", center)
+
+        # BB CENTER
+        frame = cv2.circle(frame, (center[0], center[1]), 5, (0,0,255), -1)
+
+        # FRAME CENTER
+        frame = cv2.circle(frame, (int(frame_width/2), int(frame_height/2)), 5, (0,255,0), -1)
+
+        # BOX POINTS
+        frame = cv2.circle(frame, (int(bounding_box[0]), int(bounding_box[1])), 5, (255,0,0), -1)
+        frame = cv2.circle(frame, (int(bounding_box[2]), int(bounding_box[3])), 5, (0,255,0), -1)
+
+        # BB CENTER TEXT
+        frame = cv2.putText(frame, f"BB Center: {center[0]}x{center[1]}", (500,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+    
+    # TEXTS
+    frame = cv2.putText(frame, f"Frame Center: {frame_width/2}x{frame_height/2}", (500,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3)
+    return frame
+
+def frame_to_bgr(color_frame) -> np.ndarray:
+    """Convert an Orbbec color frame to an OpenCV BGR image, handling common formats."""
+    width = color_frame.get_width()
+    height = color_frame.get_height()
+    data = np.asarray(color_frame.get_data())
+    fmt = color_frame.get_format()
+ 
+    if fmt == OBFormat.RGB:
+        img = data.reshape((height, width, 3))
+        return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    elif fmt == OBFormat.BGR:
+        return data.reshape((height, width, 3))
+    elif fmt == OBFormat.MJPG:
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    elif fmt == OBFormat.YUYV:
+        img = data.reshape((height, width, 2))
+        return cv2.cvtColor(img, cv2.COLOR_YUV2BGR_YUYV)
+    else:
+        raise ValueError(f"Unsupported color format: {fmt}")
+
+def camera_orrbec_stream():
+    pipeline = Pipeline()
+    config = Config()
+ 
+    # Pick the color stream profile (default resolution/fps from the device)
+    profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+    color_profile = profile_list.get_default_video_stream_profile()
+    config.enable_stream(color_profile)
+ 
+    pipeline.start(config)
+    print(f"Streaming color: {color_profile.get_width()}x{color_profile.get_height()} "
+          f"@ {color_profile.get_fps()}fps, format={color_profile.get_format()}")
+ 
+    try:
+        while True:
+            frames: FrameSet = pipeline.wait_for_frames(100)  # timeout ms
+            if frames is None:
+                continue
+ 
+            color_frame = frames.get_color_frame()
+            if color_frame is None:
+                continue
+ 
+            try:
+                bgr_image = frame_to_bgr(color_frame)
+                results = yolo_model(bgr_image)
+
+                frame_size = [color_frame.get_width(), color_frame.get_height()]
+                bb_img = draw_bounding_box(results, bgr_image, frame_size)
+
+            except ValueError as e:
+                print(e)
+                continue
+ 
+            cv2.imshow("Orbbec RGB Stream", bb_img)
+            # cv2.imshow("Orbbec RGB Stream", bgr_image)
+            if cv2.waitKey(1) in (ord('q'), 27):  # 'q' or ESC to quit
+                break
+    finally:
+        pipeline.stop()
+        cv2.destroyAllWindows()
+
 def calculate_center(bounding_box: list):
     x = round((bounding_box[2] + bounding_box[0]))/2
     y = round((bounding_box[3] + bounding_box[1]))/2
@@ -278,4 +367,4 @@ if __name__ == "__main__":
     # camera_feed()
     # result = yolo_model()
     # print(result)
-    camera_feed()
+    camera_orrbec_stream()
