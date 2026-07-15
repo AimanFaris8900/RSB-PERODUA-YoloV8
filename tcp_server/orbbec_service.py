@@ -2,7 +2,7 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import mediapipe as mp
-from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet
+from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet, AlignFilter, OBAlignMode
 
 BOX_SCALE = 5
 
@@ -246,27 +246,23 @@ def frame_to_bgr(color_frame) -> np.ndarray:
         raise ValueError(f"Unsupported color format: {fmt}")
 
 def camera_orrbec_stream():
-    pipeline = Pipeline()
-    config = Config()
- 
-    # Pick the color stream profile (default resolution/fps from the device)
-    profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-    color_profile = profile_list.get_default_video_stream_profile()
-    config.enable_stream(color_profile)
- 
-    pipeline.start(config)
-    print(f"Streaming color: {color_profile.get_width()}x{color_profile.get_height()} "
-          f"@ {color_profile.get_fps()}fps, format={color_profile.get_format()}")
+    pipeline = start_camera_pipeline()
  
     try:
         while True:
-            frames: FrameSet = pipeline.wait_for_frames(100)  # timeout ms
+            frames: FrameSet = pipeline.wait_for_frames(5000)  # timeout ms
             if frames is None:
                 continue
  
             color_frame = frames.get_color_frame()
             if color_frame is None:
                 continue
+
+            depth_frame = frames.get_depth_frame()
+            if color_frame is None:
+                continue
+
+            get_depth_data(depth_frame)
  
             try:
                 bgr_image = frame_to_bgr(color_frame)
@@ -291,26 +287,36 @@ def start_camera_pipeline():
     pipeline = Pipeline()
     config = Config()
  
-    # Pick the color stream profile (default resolution/fps from the device)
-    profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-    color_profile = profile_list.get_default_video_stream_profile()
-    config.enable_stream(color_profile)
- 
+    try:
+        # Pick the color stream profile (default resolution/fps from the device)
+        profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+        color_profile = profile_list.get_default_video_stream_profile()
+        config.enable_stream(color_profile)
+
+        depth_profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+        depth_profile = depth_profile_list.get_default_video_stream_profile()
+        config.enable_stream(depth_profile)
+    except Exception as e:
+        print(f"Error accessing camera streams: {e}")
+        return
+
+    config.set_align_mode(OBAlignMode.SW_MODE)
+
     pipeline.start(config)
     print(f"Streaming color: {color_profile.get_width()}x{color_profile.get_height()} "
           f"@ {color_profile.get_fps()}fps, format={color_profile.get_format()}")
+          
 
     return pipeline
 
-def camera_data_stream(pipeline: Pipeline):
+def camera_data_stream(pipeline: Pipeline, align_filter: AlignFilter):
 
     frames: FrameSet = pipeline.wait_for_frames(5000)  # timeout ms
-        
-
     if frames is None:
         return None, None
     
     color_frame = frames.get_color_frame()
+    depth_frame = frames.get_depth_frame()
 
     try:
         bgr_image = frame_to_bgr(color_frame)
@@ -323,6 +329,21 @@ def camera_data_stream(pipeline: Pipeline):
 
     except ValueError as e:
         pass
+
+def get_depth_data(frame: FrameSet):
+    depth_data = frame.get_data()
+    width = frame.get_width()
+    height = frame.get_height()
+
+    x, y = int(width/2), int(height/2)
+
+    print(f"DEPTH CAM WIDTH HEIGHT: {width} {height} {depth_data}")
+
+    # Calculate 1D index
+    if 0 <= x < width and 0 <= y < height:
+        index = y * width + x
+        depth_distance_mm = depth_data[index]
+        print(f"Distance at ({x}, {y}): {depth_distance_mm} mm")
 
 def calculate_center(bounding_box: list):
     x = round((bounding_box[2] + bounding_box[0]))/2

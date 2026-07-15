@@ -39,7 +39,7 @@ async def main():
     await asyncio.sleep(15)
 
     # start camera pipeline
-    pipeline = start_camera_pipeline()
+    pipeline, align_filter = start_camera_pipeline()
 
     #init angle
     j1 = -100
@@ -109,6 +109,8 @@ async def main():
         await push_status(connection_state.current_writer, move)
 
         await asyncio.sleep(0.1)
+
+
 
 async def test_tcp():
     server_task = asyncio.create_task(start_server())
