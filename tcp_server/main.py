@@ -42,8 +42,10 @@ async def main():
     pipeline = start_camera_pipeline()
 
     #init angle
-    j1 = -1
-    j2 = 0
+    j1 = -100
+    j2 = -0
+    j1_stop = False
+    j2_stop = False
     # start telling robot to start program/start rotate J1
     move = f"R,J,{j1},{j2},0,0,0,0"
     await push_status(connection_state.current_writer, move)
@@ -58,35 +60,50 @@ async def main():
         # await push_status(connection_state.current_writer, move)
 
         if bb_box:
-            yAxis = frame_center_height - bb_box[1]
-
-            # check whether the port is on top or bottom
-            if yAxis > 0:
-                # top
-                j2 = -1
-            else:
-                # bottom
-                j2 = 1
-
-            print("BB_BOX: ", bb_box)
             frame_center_width = int(frame_size[0]/2)
             frame_center_height = int(frame_size[1]/2)
 
+            yAxis = frame_center_height - bb_box[1]
+            xAxis = frame_center_width - bb_box[0]
+
+            # x axis
+            if not j1_stop:
+                if xAxis > 0:
+                    # top
+                    j1 = 4
+                else:
+                    # bottom
+                    j1 = -4
+
+            # check whether the port is on top or bottom
+            # z axis
+            if not j2_stop:
+                if yAxis > 0:
+                    # top
+                    j2 = 5
+                else:
+                    # bottom
+                    j2 = -5
+
+            print("BB_BOX: ", bb_box)
+        
             # check if bb X axis is equal to the frame center X axis
             if bb_box[0] >= (frame_center_width-15) and bb_box[0] <= (frame_center_width+15):
                 print("STOP J1")
                 j1 = 0
+                j1_stop = True
                 # stop = "S,J1,0"
                 # await push_status(connection_state.current_writer, stop)
                 break
 
             # check if bb X axis is equal to the frame center X axis
-            if bb_box[0] >= (frame_center_height-15) and bb_box[0] <= (frame_center_height+15):
+            if bb_box[1] >= (frame_center_height-15) and bb_box[1] <= (frame_center_height+15):
                 print("STOP J2")
                 j2 = 0
+                j2_stop = True
                 # stop = "S,J1,0"
                 # await push_status(connection_state.current_writer, stop)
-                break
+                # break
 
         move = f"R,J,{j1},{j2},0,0,0,0"
         await push_status(connection_state.current_writer, move)
