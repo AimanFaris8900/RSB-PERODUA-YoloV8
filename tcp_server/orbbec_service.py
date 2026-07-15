@@ -2,9 +2,11 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import mediapipe as mp
-from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet, AlignFilter, OBAlignMode
+from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet, OBStreamType, AlignFilter
 
 BOX_SCALE = 5
+MIN_DEPTH_MM = 100  # Clip depth closer than this (mm)
+MAX_DEPTH_MM = 5000  # Clip depth farther than this (mm)
 
 def yolo_model(frames):
     model = YOLO("weights/best.pt")
@@ -246,20 +248,24 @@ def frame_to_bgr(color_frame) -> np.ndarray:
         raise ValueError(f"Unsupported color format: {fmt}")
 
 def camera_orrbec_stream():
-    pipeline = start_camera_pipeline()
+    pipeline, align_filter = start_camera_pipeline()
  
     try:
         while True:
             frames: FrameSet = pipeline.wait_for_frames(5000)  # timeout ms
             if frames is None:
                 continue
+
+            aligned_frames = align_filter.process(frames)
+            if aligned_frames is None:
+                continue
  
-            color_frame = frames.get_color_frame()
+            color_frame = aligned_frames.get_color_frame()
             if color_frame is None:
                 continue
 
-            depth_frame = frames.get_depth_frame()
-            if color_frame is None:
+            depth_frame = aligned_frames.get_depth_frame()
+            if depth_frame is None:
                 continue
 
             get_depth_data(depth_frame)
@@ -293,31 +299,61 @@ def start_camera_pipeline():
         color_profile = profile_list.get_default_video_stream_profile()
         config.enable_stream(color_profile)
 
+        # Explicitly select Y16 depth profile — default_video_stream_profile() picks RLE
         depth_profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
-        depth_profile = depth_profile_list.get_default_video_stream_profile()
+        depth_profile = None
+        for i in range(depth_profile_list.get_count()):
+            p = depth_profile_list.get_stream_profile_by_index(i)
+            if (p.get_format() == OBFormat.Y16
+                    and p.get_width() == 1600
+                    and p.get_height() == 1200
+                    and p.get_fps() == 30):
+                depth_profile = p
+                break
+
+        if depth_profile is None:
+            raise RuntimeError("Y16 1600x1200@30fps depth profile not found")
+
         config.enable_stream(depth_profile)
     except Exception as e:
         print(f"Error accessing camera streams: {e}")
         return
 
-    config.set_align_mode(OBAlignMode.SW_MODE)
-
     pipeline.start(config)
+    align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
+
     print(f"Streaming color: {color_profile.get_width()}x{color_profile.get_height()} "
           f"@ {color_profile.get_fps()}fps, format={color_profile.get_format()}")
-          
 
-    return pipeline
+    return pipeline, align_filter
 
-def camera_data_stream(pipeline: Pipeline, align_filter: AlignFilter):
+def camera_data_stream(pipeline: Pipeline, align_filter: AlignFilter, depth = False):
 
     frames: FrameSet = pipeline.wait_for_frames(5000)  # timeout ms
     if frames is None:
-        return None, None
-    
-    color_frame = frames.get_color_frame()
-    depth_frame = frames.get_depth_frame()
+        return None
 
+    aligned_frames = align_filter.process(frames)
+    if aligned_frames is None:
+        return None
+
+    color_frame = aligned_frames.get_color_frame()
+    if color_frame is None:
+        return None
+
+    depth_frame = aligned_frames.get_depth_frame()
+    if depth_frame is None:
+        return None
+
+    center_dist = get_depth_data(depth_frame)
+
+    if depth:
+        return depth_frame
+    
+    return color_frame
+    
+
+def get_port_bbox(color_frame):
     try:
         bgr_image = frame_to_bgr(color_frame)
         results = yolo_model(bgr_image)
@@ -334,16 +370,31 @@ def get_depth_data(frame: FrameSet):
     depth_data = frame.get_data()
     width = frame.get_width()
     height = frame.get_height()
+    scale = frame.get_depth_scale()  # e.g. 0.1 → 1 unit = 0.1 mm
 
-    x, y = int(width/2), int(height/2)
+    raw = np.frombuffer(frame.get_data(), dtype=np.uint16)
+    depth_mm = raw.reshape(height, width).astype(np.float32) * scale
+
+    print(f"Depth format: {frame.get_format()}")
+    print(f"Data length: {len(frame.get_data())}, expected raw: {width*height*2}")
 
     print(f"DEPTH CAM WIDTH HEIGHT: {width} {height} {depth_data}")
 
-    # Calculate 1D index
-    if 0 <= x < width and 0 <= y < height:
-        index = y * width + x
-        depth_distance_mm = depth_data[index]
-        print(f"Distance at ({x}, {y}): {depth_distance_mm} mm")
+    cy, cx = height // 2, width // 2
+    center_dist = depth_mm[cy, cx]
+    in_range = MIN_DEPTH_MM <= center_dist <= MAX_DEPTH_MM
+    dist_label = f"{center_dist:.0f} mm" if in_range else "out of range"
+    print(f"Distance at ({cx}, {cy}): {center_dist} mm")
+
+    return center_dist
+
+    # x, y = int(width/2), int(height/2)
+
+    # # Calculate 1D index
+    # if 0 <= x < width and 0 <= y < height:
+    #     index = y * width + x
+    #     depth_distance_mm = depth_data[index]
+    #     print(f"Distance at ({x}, {y}): {depth_distance_mm} mm")
 
 def calculate_center(bounding_box: list):
     x = round((bounding_box[2] + bounding_box[0]))/2
