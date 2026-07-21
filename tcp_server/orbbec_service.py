@@ -191,7 +191,7 @@ def camera_feed():
     cam.release()
     cv2.destroyAllWindows()
 
-def realtime_bb_data(bb_results):
+def realtime_center_data(bb_results):
     center = None
     if bb_results:
         bounding_box = bb_results[0]
@@ -381,19 +381,22 @@ def camera_data_stream(pipeline: Pipeline, align_filter: AlignFilter, depth = Fa
     
     return color_frame
     
-def get_port_bbox(color_frame, depth_frame):
+def get_port_bbox(color_frame, depth_frame, bb_result=False):
     try:
         bgr_image = frame_to_bgr(color_frame)
         results = yolo_model(bgr_image)
 
         frame_size = [color_frame.get_width(), color_frame.get_height()]
-        center_port = realtime_bb_data(results)
+        center_port = realtime_center_data(results)
         bb_img = draw_bounding_box(results, bgr_image, frame_size, depth_raw=depth_frame)
 
         cv2.imshow("Orbbec RGB Stream", bb_img)
         # cv2.imshow("Orbbec RGB Stream", bgr_image)
         if cv2.waitKey(1) in (ord('q'), 27):  # 'q' or ESC to quit
             cv2.destroyAllWindows()
+
+        if bb_result:
+            return frame_size, center_port, results
 
         return frame_size, center_port
 
@@ -415,6 +418,9 @@ def get_depth_data(frame: FrameSet):
     print(f"DEPTH CAM WIDTH HEIGHT: {width} {height} {depth_data}")
 
     return depth_mm, width, height
+
+def get_2_points_coord():
+    pass
 
 def get_pixel_depth(depth_mm, cy, cx):
     # cy, cx = height // 2, width // 2

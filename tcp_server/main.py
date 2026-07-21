@@ -14,16 +14,16 @@ async def handle_incoming(reader):
     """
     Independent read loop — reacts to whatever comes from the client.
     """
+    while True:
+        msg = await read_message(reader)
+        if msg is None:
+            print("Client disconnected (read side)")
+            return msg
+        print(f"Received: {msg}")
 
-    msg = await read_message(reader)
-    if msg is None:
-        print("Client disconnected (read side)")
         return msg
-    print(f"Received: {msg}")
-
-    return msg
-        # do whatever you want with incoming data here
-        # e.g. update robot target pose, trigger a pick action, etc.
+            # do whatever you want with incoming data here
+            # e.g. update robot target pose, trigger a pick action, etc.
 
 async def push_status(writer, data: str):
     """
@@ -55,9 +55,11 @@ async def start_move_to_port_sequence(pipeline, align_filter, x_offset=4, z_offs
         # await push_status(connection_state.current_writer, move)
 
         if bb_box:
+            # camera center
             frame_center_width = int(frame_size[0]/2)
             frame_center_height = int(frame_size[1]/2)
 
+            # bbox x and z axis
             zAxis = frame_center_height - bb_box[1]
             xAxis = frame_center_width - bb_box[0]
 
@@ -166,19 +168,25 @@ async def set_tool_coord_to_cover(pipeline, align_filter):
     center_dist = get_pixel_depth(depth_mm, cy, cx)
     print("PORT DISTANCE: ", center_dist)
 
-    while feedback != "B":
-        # start telling robot to start program/start rotate x_point
+
+    for i in range(3):
         move = f"{action},L,0,0,{center_dist},0,0,0"
         await push_status(connection_state.current_writer, move)
 
-        print("SEND SET TCP OFFSET TO COVER")
-        feedback = await handle_incoming(connection_state.current_reader)
-        print("RECEIVED FEEDBACK")
-        break
+        await asyncio.sleep(0.08)
 
+    action = "B"
+    move = f"{action},L,0,0,{center_dist},0,0,0"
+    await push_status(connection_state.current_writer, move)
+
+    # print("SEND SET TCP OFFSET TO COVER")
+    # feedback = await handle_incoming(connection_state.current_reader)
+    # print("RECEIVED FEEDBACK")
+    
 async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
+    print("PIVOT STARTED")
     action = "P"
-    ry = 5
+    ry = 0.1
     ry_stop = False
     move = f"{action},J,0,0,0,0,{ry},0"
     await push_status(connection_state.current_writer, move)
@@ -187,14 +195,14 @@ async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
         color_frame, depth_frame = camera_data_stream(pipeline, align_filter, depth=True)
         depth_mm, width, height = get_depth_data(depth_frame)
 
-        frame_size ,bb_box = get_port_bbox(color_frame, depth_frame)
+        frame_size ,center_port, bb_result = get_port_bbox(color_frame, depth_frame, bb_result=True)
         frame_width = frame_size[0]
         frame_height = frame_size[1]
         center_width = int(frame_width/2)
         center_height = int(frame_height/2)
 
-        if bb_box:
-            bounding_box = bb_box[0]
+        if bb_result:
+            bounding_box = bb_result[0]
             center_bb = calculate_center(bounding_box)
 
             # 2 Depth Points
@@ -208,6 +216,8 @@ async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
             gradient = calculate_gradient(lx= depth_left_dot, ly= depth_left_dist,
                                       rx= depth_right_dot, ry= depth_right_dist)
             
+            print("GRADIENT VALUE: ", gradient)
+            
             if gradient == 0.0:
                 ry = 0
                 ry_stop = True
@@ -218,6 +228,7 @@ async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
 
         move = f"{action},J,0,0,0,0,{ry},0"    
         await push_status(connection_state.current_writer, move)
+        print("PIVOT: ", move)
 
         if ry_stop:
             action = "B"
@@ -226,6 +237,8 @@ async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
             time.sleep(3)
             print("END PIVOT")
             break
+
+        await asyncio.sleep(0.1)
 
 #----------------------------------------------------------------------------
 
@@ -262,9 +275,11 @@ async def main():
 
     await set_tool_coord_to_cover(pipeline, align_filter)
 
-    time.sleep(1)
+    time.sleep(4)
 
-    await pivot_perpendicular(pipeline, align_filter, offset_ry=1)
+    await pivot_perpendicular(pipeline, align_filter, offset_ry=0.2)
+
+    cv2.destroyAllWindows()
 
 
 
