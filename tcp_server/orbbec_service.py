@@ -199,30 +199,57 @@ def realtime_bb_data(bb_results):
 
     return center
 
-def draw_bounding_box(bb_results, frame, frame_size):
+def draw_bounding_box(bb_results, frame, frame_size, depth_raw):
     frame_width = frame_size[0]
     frame_height = frame_size[1]
+    depth_mm, width, height = get_depth_data(depth_raw)
 
     if bb_results:
         bounding_box = bb_results[0]
         print("BOUNDING BOX: ", bounding_box)
         frame = cv2.rectangle(frame, (int(bounding_box[0]),int(bounding_box[1])), (int(bounding_box[2]), int(bounding_box[3])), color=(0,0,255))
-        center = calculate_center(bounding_box)
-        print("CENTER VAR: ", center)
+        center_bb = calculate_center(bounding_box)
+        print("CENTER VAR: ", center_bb)
+        center_width = int(frame_width/2)
+        center_height = int(frame_height/2)
 
         # BB CENTER
-        frame = cv2.circle(frame, (center[0], center[1]), 5, (0,0,255), -1)
+        frame = cv2.circle(frame, (center_bb[0], center_bb[1]), 5, (0,0,255), -1)
 
         # FRAME CENTER
-        frame = cv2.circle(frame, (int(frame_width/2), int(frame_height/2)), 5, (0,255,0), -1)
+        frame = cv2.circle(frame, (center_width, center_height), 5, (0,255,0), -1)
 
         # BOX POINTS
         frame = cv2.circle(frame, (int(bounding_box[0]), int(bounding_box[1])), 5, (255,0,0), -1)
         frame = cv2.circle(frame, (int(bounding_box[2]), int(bounding_box[3])), 5, (0,255,0), -1)
 
         # BB CENTER TEXT
-        frame = cv2.putText(frame, f"BB Center: {center[0]}x{center[1]}", (500,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+        frame = cv2.putText(frame, f"BB Center: {center_bb[0]}x{center_bb[1]}", (500,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
     
+        # 2 Depth Points
+        depth_left_dot = int(((center_width - int(bounding_box[0]))/2)+int(bounding_box[0]))
+        depth_right_dot = int(((int(bounding_box[2]) - center_width)/2)+center_width)
+        
+        print("DEPTH LEFT DOT: ", depth_left_dot)
+        print("DEPTH RIGHT DOT: ", depth_right_dot)
+        
+        frame = cv2.circle(frame, (depth_left_dot, center_bb[1]), 5, (0,255,0), -1)
+        frame = cv2.circle(frame, (depth_right_dot, center_bb[1]), 5, (0,255,0), -1)
+
+        #2 Depth points distance
+        depth_left_dist = get_pixel_depth(depth_mm, cy=center_bb[1], cx=depth_left_dot)
+        depth_right_dist = get_pixel_depth(depth_mm, cy=center_bb[1], cx=depth_right_dot)
+
+        gradient = calculate_gradient(lx= depth_left_dot, ly= depth_left_dist,
+                                      rx= depth_right_dot, ry= depth_right_dist)
+
+        # Gradient text
+        frame = cv2.putText(frame, f"Left Dot: {depth_left_dist}", (1,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+        frame = cv2.putText(frame, f"Right Dot {depth_right_dist}", (1000,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+
+        # Gradient text
+        frame = cv2.putText(frame, f"Gradient: {round(gradient, 3)}", (500,650), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+
     # TEXTS
     frame = cv2.putText(frame, f"Frame Center: {frame_width/2}x{frame_height/2}", (500,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3)
     return frame
@@ -268,14 +295,18 @@ def camera_orrbec_stream():
             if depth_frame is None:
                 continue
 
-            get_depth_data(depth_frame)
+            depth_mm, width, height = get_depth_data(depth_frame)
+
+            #calculate center point
+            cy, cx = height // 2, width // 2
+            center_dist = get_pixel_depth(depth_mm, cy, cx)
  
             try:
                 bgr_image = frame_to_bgr(color_frame)
                 results = yolo_model(bgr_image)
 
                 frame_size = [color_frame.get_width(), color_frame.get_height()]
-                bb_img = draw_bounding_box(results, bgr_image, frame_size)
+                bb_img = draw_bounding_box(results, bgr_image, frame_size, depth_frame)
 
             except ValueError as e:
                 print(e)
@@ -345,21 +376,24 @@ def camera_data_stream(pipeline: Pipeline, align_filter: AlignFilter, depth = Fa
     if depth_frame is None:
         return None
 
-    center_dist = get_depth_data(depth_frame)
-
     if depth:
-        return depth_frame
+        return color_frame, depth_frame
     
     return color_frame
     
-
-def get_port_bbox(color_frame):
+def get_port_bbox(color_frame, depth_frame):
     try:
         bgr_image = frame_to_bgr(color_frame)
         results = yolo_model(bgr_image)
 
         frame_size = [color_frame.get_width(), color_frame.get_height()]
         center_port = realtime_bb_data(results)
+        bb_img = draw_bounding_box(results, bgr_image, frame_size, depth_raw=depth_frame)
+
+        cv2.imshow("Orbbec RGB Stream", bb_img)
+        # cv2.imshow("Orbbec RGB Stream", bgr_image)
+        if cv2.waitKey(1) in (ord('q'), 27):  # 'q' or ESC to quit
+            cv2.destroyAllWindows()
 
         return frame_size, center_port
 
@@ -380,7 +414,10 @@ def get_depth_data(frame: FrameSet):
 
     print(f"DEPTH CAM WIDTH HEIGHT: {width} {height} {depth_data}")
 
-    cy, cx = height // 2, width // 2
+    return depth_mm, width, height
+
+def get_pixel_depth(depth_mm, cy, cx):
+    # cy, cx = height // 2, width // 2
     center_dist = depth_mm[cy, cx]
     in_range = MIN_DEPTH_MM <= center_dist <= MAX_DEPTH_MM
     dist_label = f"{center_dist:.0f} mm" if in_range else "out of range"
@@ -404,6 +441,12 @@ def calculate_center(bounding_box: list):
     # print("CENTER: ",center_coor)
 
     return center_coor
+
+def calculate_gradient(lx, ly, rx, ry):
+    gradient = (ry - ly)/(rx - lx)
+    gradient = round(gradient, 3)
+
+    return gradient
 
 if __name__ == "__main__":
     # crop_detection("test_images/rgb.png", "test_images/raw_depth.png")

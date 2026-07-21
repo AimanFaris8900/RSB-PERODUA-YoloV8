@@ -1,7 +1,5 @@
 import asyncio
 
-
-
 async def read_message(reader: asyncio.StreamReader) -> str | None:
     """
     Reads data from the stream. Returns the decoded string,
