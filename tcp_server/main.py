@@ -114,7 +114,7 @@ async def start_move_to_port_sequence(pipeline, align_filter, x_offset=4, z_offs
             print("PROGRAM END")
             break
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.2)
 
 async def maintain_port_distance_sequence(pipeline, align_filter):
     action = "D"
@@ -169,15 +169,10 @@ async def set_tool_coord_to_cover(pipeline, align_filter):
     print("PORT DISTANCE: ", center_dist)
 
 
-    for i in range(3):
-        move = f"{action},L,0,0,{center_dist},0,0,0"
-        await push_status(connection_state.current_writer, move)
-
-        await asyncio.sleep(0.08)
-
-    action = "B"
     move = f"{action},L,0,0,{center_dist},0,0,0"
     await push_status(connection_state.current_writer, move)
+
+    await asyncio.sleep(0.3)
 
     # print("SEND SET TCP OFFSET TO COVER")
     # feedback = await handle_incoming(connection_state.current_reader)
@@ -217,14 +212,14 @@ async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
                                       rx= depth_right_dot, ry= depth_right_dist)
             
             print("GRADIENT VALUE: ", gradient)
-            
-            if gradient == 0.0:
-                ry = 0
-                ry_stop = True
-            elif gradient > 0.0:
+                
+            if gradient > 0.0:
                 ry = offset_ry * -1
             elif gradient < 0.0:
                 ry = offset_ry
+            else:
+                ry = 0
+                ry_stop = True
 
         move = f"{action},J,0,0,0,0,{ry},0"    
         await push_status(connection_state.current_writer, move)
@@ -240,6 +235,34 @@ async def pivot_perpendicular(pipeline, align_filter, offset_ry = 1):
 
         await asyncio.sleep(0.1)
 
+async def close_distance(pipeline, align_filter):
+    print("CLOSE DISTANCE START")
+    action = "D"
+    y = 0
+    y_stop = False
+
+    # start telling robot to start program/start rotate x_point
+    move = f"{action},L,0,{y},0,0,0,0"
+    await push_status(connection_state.current_writer, move)
+
+    color_frame, depth_frame = camera_data_stream(pipeline, align_filter, depth=True)
+    depth_mm, width, height = get_depth_data(depth_frame)
+
+    #calculate center point
+    cy, cx = height // 2, width // 2
+    center_dist = get_pixel_depth(depth_mm, cy, cx)
+
+    if center_dist > MIN_DEPTH_RANGE:
+        dist_offset = center_dist - MIN_DEPTH_RANGE
+        y = dist_offset
+
+        move = f"{action},L,0,{y},0,0,0,0"
+        await push_status(connection_state.current_writer, move)
+
+    await asyncio.sleep(3)
+
+    
+
 #----------------------------------------------------------------------------
 
 async def main():
@@ -247,19 +270,14 @@ async def main():
     server_task = asyncio.create_task(start_server())
 
     print("MAIN STARTED...")
-    await asyncio.sleep(15)
+    await asyncio.sleep(20)
 
     # start camera pipeline
     pipeline, align_filter = start_camera_pipeline()
 
     await start_move_to_port_sequence(pipeline, align_filter)
 
-    time.sleep(1)
-
-    print("START BACKING UP")
-    await maintain_port_distance_sequence(pipeline, align_filter)
-
-    time.sleep(1)
+    time.sleep(3)
 
     print("START SMALL ADJUSTMENT")
     #small adjustment move towards center
@@ -270,15 +288,50 @@ async def main():
                                       x_point=0)
     
     cv2.destroyAllWindows()
+
+    time.sleep(3)
+        
+    print("START CLOSING UP")
+    await close_distance(pipeline, align_filter)
+
+    print("START SMALL ADJUSTMENT")
+    #small adjustment move towards center
+    await start_move_to_port_sequence(pipeline, align_filter,
+                                        x_offset=0.1,
+                                        z_offset=0.1,
+                                        diff=0,
+                                        x_point=0)
     
-    time.sleep(5)
+    cv2.destroyAllWindows()
+    
+    time.sleep(2)
 
     await set_tool_coord_to_cover(pipeline, align_filter)
 
-    time.sleep(4)
+    time.sleep(2)
 
-    await pivot_perpendicular(pipeline, align_filter, offset_ry=0.2)
+    await pivot_perpendicular(pipeline, align_filter, offset_ry=0.1)
 
+    cv2.destroyAllWindows()
+
+    print("START SMALL ADJUSTMENT")
+    #small adjustment move towards center
+    await start_move_to_port_sequence(pipeline, align_filter,
+                                      x_offset=0.1,
+                                      z_offset=0.1,
+                                      diff=0,
+                                      x_point=0)
+    
+    cv2.destroyAllWindows()
+
+    time.sleep(2)
+    
+    await set_tool_coord_to_cover(pipeline, align_filter)
+
+    time.sleep(2)
+
+    await pivot_perpendicular(pipeline, align_filter, offset_ry=0.01)
+    
     cv2.destroyAllWindows()
 
 
