@@ -2,9 +2,11 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import mediapipe as mp
-from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet
+from pyorbbecsdk import Pipeline, Config, OBSensorType, OBFormat, FrameSet, OBStreamType, AlignFilter
 
 BOX_SCALE = 5
+MIN_DEPTH_MM = 100  # Clip depth closer than this (mm)
+MAX_DEPTH_MM = 5000  # Clip depth farther than this (mm)
 
 def yolo_model(frames):
     model = YOLO("weights/best.pt")
@@ -189,30 +191,65 @@ def camera_feed():
     cam.release()
     cv2.destroyAllWindows()
 
-def draw_bounding_box(bb_results, frame, frame_size):
+def realtime_center_data(bb_results):
+    center = None
+    if bb_results:
+        bounding_box = bb_results[0]
+        center = calculate_center(bounding_box)
+
+    return center
+
+def draw_bounding_box(bb_results, frame, frame_size, depth_raw):
     frame_width = frame_size[0]
     frame_height = frame_size[1]
+    depth_mm, width, height = get_depth_data(depth_raw)
 
     if bb_results:
         bounding_box = bb_results[0]
         print("BOUNDING BOX: ", bounding_box)
         frame = cv2.rectangle(frame, (int(bounding_box[0]),int(bounding_box[1])), (int(bounding_box[2]), int(bounding_box[3])), color=(0,0,255))
-        center = calculate_center(bounding_box)
-        print("CENTER VAR: ", center)
+        center_bb = calculate_center(bounding_box)
+        print("CENTER VAR: ", center_bb)
+        center_width = int(frame_width/2)
+        center_height = int(frame_height/2)
 
         # BB CENTER
-        frame = cv2.circle(frame, (center[0], center[1]), 5, (0,0,255), -1)
+        frame = cv2.circle(frame, (center_bb[0], center_bb[1]), 5, (0,0,255), -1)
 
         # FRAME CENTER
-        frame = cv2.circle(frame, (int(frame_width/2), int(frame_height/2)), 5, (0,255,0), -1)
+        frame = cv2.circle(frame, (center_width, center_height), 5, (0,255,0), -1)
 
         # BOX POINTS
         frame = cv2.circle(frame, (int(bounding_box[0]), int(bounding_box[1])), 5, (255,0,0), -1)
         frame = cv2.circle(frame, (int(bounding_box[2]), int(bounding_box[3])), 5, (0,255,0), -1)
 
         # BB CENTER TEXT
-        frame = cv2.putText(frame, f"BB Center: {center[0]}x{center[1]}", (500,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+        frame = cv2.putText(frame, f"BB Center: {center_bb[0]}x{center_bb[1]}", (500,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
     
+        # 2 Depth Points
+        depth_left_dot = int(((center_width - int(bounding_box[0]))/2)+int(bounding_box[0]))
+        depth_right_dot = int(((int(bounding_box[2]) - center_width)/2)+center_width)
+        
+        print("DEPTH LEFT DOT: ", depth_left_dot)
+        print("DEPTH RIGHT DOT: ", depth_right_dot)
+        
+        frame = cv2.circle(frame, (depth_left_dot, center_bb[1]), 5, (0,255,0), -1)
+        frame = cv2.circle(frame, (depth_right_dot, center_bb[1]), 5, (0,255,0), -1)
+
+        #2 Depth points distance
+        depth_left_dist = get_pixel_depth(depth_mm, cy=center_bb[1], cx=depth_left_dot)
+        depth_right_dist = get_pixel_depth(depth_mm, cy=center_bb[1], cx=depth_right_dot)
+
+        gradient = calculate_gradient(lx= depth_left_dot, ly= depth_left_dist,
+                                      rx= depth_right_dot, ry= depth_right_dist)
+
+        # Gradient text
+        frame = cv2.putText(frame, f"Left Dot: {depth_left_dist}", (1,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+        frame = cv2.putText(frame, f"Right Dot {depth_right_dist}", (1000,700), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+
+        # Gradient text
+        frame = cv2.putText(frame, f"Gradient: {round(gradient, 3)}", (500,650), cv2.FONT_HERSHEY_SIMPLEX, 1, (250, 250, 250), 3)
+
     # TEXTS
     frame = cv2.putText(frame, f"Frame Center: {frame_width/2}x{frame_height/2}", (500,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3)
     return frame
@@ -238,34 +275,38 @@ def frame_to_bgr(color_frame) -> np.ndarray:
         raise ValueError(f"Unsupported color format: {fmt}")
 
 def camera_orrbec_stream():
-    pipeline = Pipeline()
-    config = Config()
- 
-    # Pick the color stream profile (default resolution/fps from the device)
-    profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-    color_profile = profile_list.get_default_video_stream_profile()
-    config.enable_stream(color_profile)
- 
-    pipeline.start(config)
-    print(f"Streaming color: {color_profile.get_width()}x{color_profile.get_height()} "
-          f"@ {color_profile.get_fps()}fps, format={color_profile.get_format()}")
+    pipeline, align_filter = start_camera_pipeline()
  
     try:
         while True:
-            frames: FrameSet = pipeline.wait_for_frames(100)  # timeout ms
+            frames: FrameSet = pipeline.wait_for_frames(5000)  # timeout ms
             if frames is None:
                 continue
+
+            aligned_frames = align_filter.process(frames)
+            if aligned_frames is None:
+                continue
  
-            color_frame = frames.get_color_frame()
+            color_frame = aligned_frames.get_color_frame()
             if color_frame is None:
                 continue
+
+            depth_frame = aligned_frames.get_depth_frame()
+            if depth_frame is None:
+                continue
+
+            depth_mm, width, height = get_depth_data(depth_frame)
+
+            #calculate center point
+            cy, cx = height // 2, width // 2
+            center_dist = get_pixel_depth(depth_mm, cy, cx)
  
             try:
                 bgr_image = frame_to_bgr(color_frame)
                 results = yolo_model(bgr_image)
 
                 frame_size = [color_frame.get_width(), color_frame.get_height()]
-                bb_img = draw_bounding_box(results, bgr_image, frame_size)
+                bb_img = draw_bounding_box(results, bgr_image, frame_size, depth_frame)
 
             except ValueError as e:
                 print(e)
@@ -279,6 +320,125 @@ def camera_orrbec_stream():
         pipeline.stop()
         cv2.destroyAllWindows()
 
+def start_camera_pipeline():
+    pipeline = Pipeline()
+    config = Config()
+ 
+    try:
+        # Pick the color stream profile (default resolution/fps from the device)
+        profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+        color_profile = profile_list.get_default_video_stream_profile()
+        config.enable_stream(color_profile)
+
+        # Explicitly select Y16 depth profile — default_video_stream_profile() picks RLE
+        depth_profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+        depth_profile = None
+        for i in range(depth_profile_list.get_count()):
+            p = depth_profile_list.get_stream_profile_by_index(i)
+            if (p.get_format() == OBFormat.Y16
+                    and p.get_width() == 1600
+                    and p.get_height() == 1200
+                    and p.get_fps() == 30):
+                depth_profile = p
+                break
+
+        if depth_profile is None:
+            raise RuntimeError("Y16 1600x1200@30fps depth profile not found")
+
+        config.enable_stream(depth_profile)
+    except Exception as e:
+        print(f"Error accessing camera streams: {e}")
+        return
+
+    pipeline.start(config)
+    align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
+
+    print(f"Streaming color: {color_profile.get_width()}x{color_profile.get_height()} "
+          f"@ {color_profile.get_fps()}fps, format={color_profile.get_format()}")
+
+    return pipeline, align_filter
+
+def camera_data_stream(pipeline: Pipeline, align_filter: AlignFilter, depth = False):
+
+    frames: FrameSet = pipeline.wait_for_frames(5000)  # timeout ms
+    if frames is None:
+        return None
+
+    aligned_frames = align_filter.process(frames)
+    if aligned_frames is None:
+        return None
+
+    color_frame = aligned_frames.get_color_frame()
+    if color_frame is None:
+        return None
+
+    depth_frame = aligned_frames.get_depth_frame()
+    if depth_frame is None:
+        return None
+
+    if depth:
+        return color_frame, depth_frame
+    
+    return color_frame
+    
+def get_port_bbox(color_frame, depth_frame, bb_result=False):
+    try:
+        bgr_image = frame_to_bgr(color_frame)
+        results = yolo_model(bgr_image)
+
+        frame_size = [color_frame.get_width(), color_frame.get_height()]
+        center_port = realtime_center_data(results)
+        bb_img = draw_bounding_box(results, bgr_image, frame_size, depth_raw=depth_frame)
+
+        cv2.imshow("Orbbec RGB Stream", bb_img)
+        # cv2.imshow("Orbbec RGB Stream", bgr_image)
+        if cv2.waitKey(1) in (ord('q'), 27):  # 'q' or ESC to quit
+            cv2.destroyAllWindows()
+
+        if bb_result:
+            return frame_size, center_port, results
+
+        return frame_size, center_port
+
+    except ValueError as e:
+        pass
+
+def get_depth_data(frame: FrameSet):
+    depth_data = frame.get_data()
+    width = frame.get_width()
+    height = frame.get_height()
+    scale = frame.get_depth_scale()  # e.g. 0.1 → 1 unit = 0.1 mm
+
+    raw = np.frombuffer(frame.get_data(), dtype=np.uint16)
+    depth_mm = raw.reshape(height, width).astype(np.float32) * scale
+
+    print(f"Depth format: {frame.get_format()}")
+    print(f"Data length: {len(frame.get_data())}, expected raw: {width*height*2}")
+
+    print(f"DEPTH CAM WIDTH HEIGHT: {width} {height} {depth_data}")
+
+    return depth_mm, width, height
+
+def get_2_points_coord():
+    pass
+
+def get_pixel_depth(depth_mm, cy, cx):
+    # cy, cx = height // 2, width // 2
+    center_dist = depth_mm[cy, cx]
+    in_range = MIN_DEPTH_MM <= center_dist <= MAX_DEPTH_MM
+    dist_label = f"{center_dist:.0f} mm" if in_range else "out of range"
+    print(f"Distance at ({cx}, {cy}): {center_dist} mm")
+
+    return center_dist
+
+    # x, y = int(width/2), int(height/2)
+
+    # # Calculate 1D index
+    # if 0 <= x < width and 0 <= y < height:
+    #     index = y * width + x
+    #     depth_distance_mm = depth_data[index]
+    #     print(f"Distance at ({x}, {y}): {depth_distance_mm} mm")
+
 def calculate_center(bounding_box: list):
     x = round((bounding_box[2] + bounding_box[0]))/2
     y = round((bounding_box[3] + bounding_box[1]))/2
@@ -288,78 +448,11 @@ def calculate_center(bounding_box: list):
 
     return center_coor
 
-def hand_pose():
-    mp_drawing = mp.solutions.drawing_utils
-    mp_drawing_styles = mp.solutions.drawing_styles
-    mp_hands = mp.solutions.hands
+def calculate_gradient(lx, ly, rx, ry):
+    gradient = (ry - ly)/(rx - lx)
+    gradient = round(gradient, 3)
 
-    # For static images:
-    IMAGE_FILES = []
-    with mp_hands.Hands(
-        static_image_mode=True,
-        max_num_hands=2,
-        min_detection_confidence=0.5) as hands:
-        for idx, file in enumerate(IMAGE_FILES):
-            image = cv2.flip(cv2.imread(file), 1)
-            results = hands.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-            print('Handedness:', results.multi_handedness)
-            if not results.multi_hand_landmarks:
-                continue
-            image_height, image_width, _ = image.shape
-            annotated_image = image.copy()
-            for hand_landmarks in results.multi_hand_landmarks:
-                print('hand_landmarks:', hand_landmarks)
-                print(
-                    f'Index finger tip coordinates: (',
-                    f'{hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].x * image_width}, '
-                    f'{hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * image_height})'
-                )
-                mp_drawing.draw_landmarks(
-                    annotated_image,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                    mp_drawing_styles.get_default_hand_connections_style())
-            cv2.imwrite(
-                '/tmp/annotated_image' + str(idx) + '.png', cv2.flip(annotated_image, 1))
-            if not results.multi_hand_world_landmarks:
-                continue
-            for hand_world_landmarks in results.multi_hand_world_landmarks:
-                mp_drawing.plot_landmarks(
-                    hand_world_landmarks, mp_hands.HAND_CONNECTIONS, azimuth=5)
-
-    # For webcam input:
-    cap = cv2.VideoCapture(0)
-    with mp_hands.Hands(
-        model_complexity=0,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5) as hands:
-        while cap.isOpened():
-            success, image = cap.read()
-            if not success:
-                print("Ignoring empty camera frame.")
-                continue
-
-            image.flags.writeable = False
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            results = hands.process(image)
-
-            image.flags.writeable = True
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    mp_drawing.draw_landmarks(
-                        image,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_drawing_styles.get_default_hand_landmarks_style(),
-                        mp_drawing_styles.get_default_hand_connections_style())
-            cv2.imshow('MediaPipe Hands', cv2.flip(image, 1))
-            if cv2.waitKey(5) & 0xFF == 27:
-                break
-
-    cap.release()
+    return gradient
 
 if __name__ == "__main__":
     # crop_detection("test_images/rgb.png", "test_images/raw_depth.png")
