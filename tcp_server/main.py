@@ -2,14 +2,17 @@ import cv2
 import asyncio
 from tcp_async_service import main as start_server
 from network_utils import read_message, send_message
-import json
 import time
 import connection_state
 from orbbec_service import camera_data_stream, start_camera_pipeline, get_port_bbox, get_depth_data, get_pixel_depth, calculate_center, calculate_gradient
 
+# This is the minimum range of Orbbec Astra 2 camera
+# If go below this range, the camera can no longer detect depth
+# Because it is too close to the object
 MIN_DEPTH_RANGE = 520 # mm
 
 print(f"MAIN connection_state module id: {id(connection_state)}")
+# Handle incoming data from client
 async def handle_incoming(reader):
     """
     Independent read loop — reacts to whatever comes from the client.
@@ -22,9 +25,8 @@ async def handle_incoming(reader):
         print(f"Received: {msg}")
 
         return msg
-            # do whatever you want with incoming data here
-            # e.g. update robot target pose, trigger a pick action, etc.
 
+# Send data through TCP to client
 async def push_status(writer, data: str):
     """
     Call this on-demand, whenever YOU decide something needs to be sent.
@@ -333,7 +335,6 @@ async def main():
     await pivot_perpendicular(pipeline, align_filter, offset_ry=0.01)
     
     cv2.destroyAllWindows()
-
 
 
 async def test_tcp():
